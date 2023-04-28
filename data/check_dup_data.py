@@ -21,8 +21,7 @@ def check_duplicates(path):
 
 
 if __name__ == "__main__":
-    dir_path = os.path.dirname(os.path.realpath(
-        __file__))  # Get current directory path
+    dir_path = os.path.dirname(os.path.realpath(__file__))  # Get current directory path
     dirs = os.listdir(dir_path)  # Get all files in current directory
     for file in dirs:
         data_file = os.path.join(dir_path, file)
