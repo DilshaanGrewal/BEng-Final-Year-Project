@@ -1,16 +1,25 @@
-
+import os
 import numpy as np
 from PIL import Image, ImageOps
 from numpy import asarray
-import sys
 
-def main():
-    img = Image.open(sys.argv[1])
+
+def main(path):
+    img = Image.open(path)
     img = ImageOps.grayscale(img)
     numpydata = asarray(img)
-    a = sys.argv[1].split("/")
-    b = a[-1].split(".")
-    np.save(b[0] + "_arr", numpydata)
+    filename, file_extension = os.path.splitext(path)
+    np.save(filename + "_arr", numpydata)
+
 
 if __name__ == "__main__":
-    main()
+    dir_path = os.path.dirname(os.path.realpath(
+        __file__))  # Get current directory path
+    dirs = os.listdir(dir_path)  # Get all files in current directory
+    for file in dirs:
+        if file == "cabbage" or file == "carrot" or file == "tomato":
+            data_file = os.path.join(dir_path, file)
+            for img in os.listdir(data_file):
+                img_path = os.path.join(data_file, img)
+                print("Converting " + img_path + " to numpy array")
+                main(img_path)
