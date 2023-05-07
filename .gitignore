@@ -1,5 +1,7 @@
 # pycache files
 __pycache__/
 *.pyc
-pretrained_models/
 .pylintrc
+*.png
+*.pth
+baseline-training
