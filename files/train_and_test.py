@@ -31,6 +31,12 @@ def _train_or_test(model, dataloader, optimizer=None, class_specific=True, use_l
     total_fa_cost = 0
     with_fa = False # intialization, see line 41
 
+    print("is_train: ", is_train)
+    print("data loader length: ", len(dataloader))
+    print("num workers: ", dataloader.num_workers)
+    print("batch size: ", dataloader.batch_size)
+    print("Class map: ", dataloader.dataset.class_to_idx)
+
     for i, (image, label, patient_id) in enumerate(dataloader):
         print(str(i) + "/" + str(len(dataloader)))
         # get one batch from finer datatloader
@@ -200,9 +206,14 @@ def _train_or_test(model, dataloader, optimizer=None, class_specific=True, use_l
     avg_auc = 0
     print(len(total_one_hot_label[0]))
     for auc_idx in range(len(total_one_hot_label[0])) :
-        avg_auc += roc_auc_score(np.array(total_one_hot_label)[:, auc_idx], np.array(total_output)[:, auc_idx]) / len(total_one_hot_label[0])
+        y_true = np.array(total_one_hot_label)[:, auc_idx]
+        y_scores = np.array(total_output)[:, auc_idx]
+        # Replace NaN with 0.0, and convert inf to largest finite float
+        y_true = np.nan_to_num(y_true)
+        y_scores = np.nan_to_num(y_scores)
+        avg_auc += roc_auc_score(y_true, y_scores) / len(total_one_hot_label[0])
         log("\tauc score for class {} is: \t\t{}".format(auc_idx,
-                                                         roc_auc_score(np.array(total_one_hot_label)[:, auc_idx], np.array(total_output)[:, auc_idx])))
+                                                         roc_auc_score(y_true, y_scores)))
 
     log('\taccu: \t\t{0}%'.format(n_correct / n_examples * 100))
     #log('\tl1: \t\t{0}'.format(model.module.last_layer.weight.norm(p=1).item()))
@@ -212,6 +223,9 @@ def _train_or_test(model, dataloader, optimizer=None, class_specific=True, use_l
     log('\tp dist pair: \t{0}'.format(p_avg_pair_dist.item()))
     log('\tthe confusion matrix is: \t\t{0}'.format(confusion_matrix))
 
+    output_accuracy = True # Set to true when doing Structural pruning in optimisation.py, otherwise leave as false
+    if output_accuracy:
+        return n_correct / n_examples * 100
     return avg_auc, (end - start)
 
 

@@ -69,14 +69,16 @@ base_architecture_type = re.match('^[a-z]*', base_architecture).group(0)
 prototype_shape = (prototype_shape[0], latent_shape, prototype_shape[2], prototype_shape[3])
 print("Protoype shape: ", prototype_shape)
 
-model_dir = '/usr/xtmp/mammo/saved_models/' + base_architecture + '/' + experiment_run + '/'
+# model_dir = '/usr/xtmp/mammo/saved_models/' + base_architecture + '/' + experiment_run + '/'
+model_dir = r'C:\\Users\\dilsh\\OneDrive\\Documents\\Dilshaan\\Third_Year\\BEng_Individual_Project\\code\\BEng-Final-Year-Project\\model'
+
 print("saving models to: ", model_dir)
-makedir(model_dir)
-shutil.copy(src=os.path.join(os.getcwd(), __file__), dst=model_dir)
-shutil.copy(src=os.path.join(os.getcwd(), 'settings.py'), dst=model_dir)
-shutil.copy(src=os.path.join(os.getcwd(), base_architecture_type + '_features.py'), dst=model_dir)
-shutil.copy(src=os.path.join(os.getcwd(), 'model.py'), dst=model_dir)
-shutil.copy(src=os.path.join(os.getcwd(), 'train_and_test.py'), dst=model_dir)
+# makedir(model_dir)
+# shutil.copy(src=os.path.join(os.getcwd(), __file__), dst=model_dir)
+# shutil.copy(src=os.path.join(os.getcwd(), 'settings.py'), dst=model_dir)
+# shutil.copy(src=os.path.join(os.getcwd(), base_architecture_type + '_features.py'), dst=model_dir)
+# shutil.copy(src=os.path.join(os.getcwd(), 'model.py'), dst=model_dir)
+# shutil.copy(src=os.path.join(os.getcwd(), 'train_and_test.py'), dst=model_dir)
 log, logclose = create_logger(log_filename=os.path.join(model_dir, 'train.log'))
 img_dir = os.path.join(model_dir, 'img')
 makedir(img_dir)
@@ -107,6 +109,9 @@ else:
     finer_train_loader = None
 
 # all datasets
+NUM_OF_WORKERS = 0  # originally 4, have to set to zero otherwise it will hang due to multiprocessing error
+PIN_MEMORY_FLAG = False # originally False
+
 # train set
 train_dataset = DatasetFolder(
     train_dir,
@@ -116,9 +121,22 @@ train_dataset = DatasetFolder(
     transform = transforms.Compose([
         torch.from_numpy,
     ]))
+
+print("\n Training dataset info:")
+print("Class names: ", train_dataset.classes)
+print("Class to index mapping: ", train_dataset.class_to_idx)
+class_counts = {c: 0 for c in train_dataset.classes}
+for _, target in train_dataset.samples:
+    class_counts[train_dataset.classes[target]] += 1
+
+for c, count in class_counts.items():
+    print(f"Number of items in class {c}: {count}")
+print("\n")
+
+
 train_loader = torch.utils.data.DataLoader(
     train_dataset, batch_size=train_batch_size, shuffle=True,
-    num_workers=4, pin_memory=False)
+    num_workers=NUM_OF_WORKERS, pin_memory=PIN_MEMORY_FLAG)
 
 # finer train set
 if finer_annotation_dir:
@@ -131,7 +149,8 @@ if finer_annotation_dir:
             torch.from_numpy,
         ]))
     finer_train_loader = torch.utils.data.DataLoader(
-        finer_train_dataset, batch_size=10, shuffle=True, num_workers=4, pin_memory=False)
+        finer_train_dataset, batch_size=10, shuffle=True, 
+        num_workers=NUM_OF_WORKERS, pin_memory=PIN_MEMORY_FLAG)
 
 # push set
 train_push_dataset = DatasetFolder(
@@ -143,7 +162,7 @@ train_push_dataset = DatasetFolder(
     ]))
 train_push_loader = torch.utils.data.DataLoader(
     train_push_dataset, batch_size=train_push_batch_size, shuffle=False,
-    num_workers=4, pin_memory=False)
+    num_workers=NUM_OF_WORKERS, pin_memory=PIN_MEMORY_FLAG)
 
 # test set
 test_dataset =DatasetFolder(
@@ -155,7 +174,7 @@ test_dataset =DatasetFolder(
     ]))
 test_loader = torch.utils.data.DataLoader(
     test_dataset, batch_size=test_batch_size, shuffle=False,
-    num_workers=4, pin_memory=False)
+    num_workers=NUM_OF_WORKERS, pin_memory=PIN_MEMORY_FLAG)
 
 
 # we should look into distributed sampler more carefully at torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -171,6 +190,7 @@ log("Using topk_k coeff from bash args: {0}, which is {1:.4}%".format(topk_k, fl
 from settings import class_specific
 # construct the model
 if load_model_dir:
+    # load model, not a state dict of a model
     ppnet = torch.load(load_model_dir)
     log('starting from model: {0}'.format(load_model_dir))
 else:
@@ -192,9 +212,9 @@ ppnet_multi = torch.nn.DataParallel(ppnet)
 # define optimizer
 from settings import joint_optimizer_lrs, joint_lr_step_size
 joint_optimizer_specs = \
-[{'params': ppnet.features.parameters(), 'lr': joint_optimizer_lrs['features'], 'weight_decay': 1e-3}, # bias are now also being regularized
- {'params': ppnet.add_on_layers.parameters(), 'lr': joint_optimizer_lrs['add_on_layers'], 'weight_decay': 1e-3},
- {'params': ppnet.prototype_vectors, 'lr': joint_optimizer_lrs['prototype_vectors']},
+[{'params': ppnet.features.parameters(), 'lr': joint_optimizer_lrs['features'], 'weight_decay': 1e-3}, # bias are now also being regularized, CNN layers
+ {'params': ppnet.add_on_layers.parameters(), 'lr': joint_optimizer_lrs['add_on_layers'], 'weight_decay': 1e-3}, # PPNet CNN layers
+ {'params': ppnet.prototype_vectors, 'lr': joint_optimizer_lrs['prototype_vectors']}, # PPNet prototype layers
 ]
 joint_optimizer = torch.optim.Adam(joint_optimizer_specs)
 joint_lr_scheduler = torch.optim.lr_scheduler.StepLR(joint_optimizer, step_size=joint_lr_step_size, gamma=0.1)
@@ -246,7 +266,9 @@ for epoch in range(num_train_epochs):
 
     auc = tnt.test(model=ppnet_multi, dataloader=test_loader,
                     class_specific=class_specific, log=log)
-    save.save_model_w_condition(model=ppnet, model_dir=model_dir, model_name=str(epoch) + 'nopush', accu=auc,
+    if isinstance(auc, tuple):
+        auc, t1 = auc
+    save.save_model_w_condition(model=ppnet_multi, model_dir=model_dir, model_name=str(epoch) + 'nopush', accu=auc,
                                 target_accu=0.00, log=log)
 
     train_auc.append(_)
@@ -262,8 +284,8 @@ for epoch in range(num_train_epochs):
     plt.savefig(model_dir + 'train_test_auc.png')
     plt.close()
 
-
-    if epoch >= push_start and epoch in push_epochs:
+    # update the prototypes in each push epoch (using the current batch of training data)
+    if epoch >= push_start:
         push.push_prototypes(
             train_push_loader, # pytorch dataloader (must be unnormalized in [0,1])
             prototype_network_parallel=ppnet_multi, # pytorch network with prototype_vectors
@@ -280,18 +302,22 @@ for epoch in range(num_train_epochs):
             prototype_activation_function_in_numpy=prototype_activation_function_in_numpy)
         accu = tnt.test(model=ppnet_multi, dataloader=test_loader,
                         class_specific=class_specific, log=log)
-        save.save_model_w_condition(model=ppnet, model_dir=model_dir, model_name=str(epoch) + 'push', accu=accu,
+        if isinstance(accu, tuple):
+            accu, t2 = accu
+        save.save_model_w_condition(model=ppnet_multi, model_dir=model_dir, model_name=str(epoch) + 'push', accu=accu,
                                     target_accu=0.00, log=log)
 
         if prototype_activation_function != 'linear':
             tnt.last_only(model=ppnet_multi, log=log)
-            for i in range(10):
+            for i in range(1):
                 log('iteration: \t{0}'.format(i))
                 _ = tnt.train(model=ppnet_multi, dataloader=train_loader, optimizer=last_layer_optimizer,
                               class_specific=class_specific, coefs=coefs, log=log, finer_loader=finer_train_loader)
                 auc = tnt.test(model=ppnet_multi, dataloader=test_loader,
                                 class_specific=class_specific, log=log)
-                save.save_model_w_condition(model=ppnet, model_dir=model_dir, model_name=str(epoch) + '_' + str(i) + 'push', accu=auc,
+                if isinstance(auc, tuple):
+                    auc, t3 = auc
+                save.save_model_w_condition(model=ppnet_multi, model_dir=model_dir, model_name=str(epoch) + '_' + str(i) + 'push', accu=auc,
                                             target_accu=0.00, log=log)
                 train_auc.append(_)
                 test_auc.append(auc)

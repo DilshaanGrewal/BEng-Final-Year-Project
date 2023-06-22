@@ -114,16 +114,17 @@ train_dataset = DatasetFolder(
     ]))
 train_loader = torch.utils.data.DataLoader(
     train_dataset, batch_size=train_batch_size, shuffle=True,
-    num_workers=4, pin_memory=False)
+    num_workers=0, pin_memory=False)
 
 ppnet = torch.load(load_model_dir)
 ppnet = ppnet.to(device)
-ppnet_multi = torch.nn.DataParallel(ppnet)
+# ppnet_multi = torch.nn.DataParallel(ppnet)
+ppnet_multi = ppnet
 ppnet_multi.eval()
 
-torch.quantization.fuse_modules(ppnet_multi.module.features.features, [['0', '1'],['3', '4']], inplace=True)
+torch.quantization.fuse_modules(ppnet_multi.module.features.features, ['0', '1'], inplace=True)
 #print(ppnet_multi.module.features.features)
-num_calibration_batches = 32
+num_calibration_batches = 2
 criterion = torch.nn.CrossEntropyLoss()
 
 #pnet_multi.qconfig = torch.quantization.default_qconfig

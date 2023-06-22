@@ -22,6 +22,7 @@ import save
 from log import create_logger
 from preprocess import mean, std, preprocess_input_function
 import random
+from settings import data_path, test_batch_size
 
 def print_size_of_model(model):
     torch.save(model.state_dict(), "temp.p")
@@ -29,27 +30,34 @@ def print_size_of_model(model):
     os.remove('temp.p')
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+# device = torch.device("cpu")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-test_dir", type=str)
 parser.add_argument("-model_dir", type=str)
 parser.add_argument("-model_name", type=str)
+parser.add_argument("-base", type=str)
 args = parser.parse_args()
 load_model_dir = args.model_dir + args.model_name
 model_name = args.model_name
-test_dir = args.test_dir
+if args.test_dir is None:
+    # Using test data instead of validation data
+    test_dir = data_path + "\\test\\"
 model_dir = args.model_dir
-base_architecture = load_model_dir.split('/')[-3]
+base_architecture = args.base
 
 
 from torchinfo import summary
-from settings import img_size, prototype_shape, num_classes, \
-        prototype_activation_function, add_on_layers_type, prototype_activation_function_in_numpy
-from settings import train_dir, test_dir, train_push_dir, \
-                     train_batch_size, test_batch_size, train_push_batch_size
+# from settings import img_size, prototype_shape, num_classes, \
+#         prototype_activation_function, add_on_layers_type, prototype_activation_function_in_numpy
+# from settings import train_dir, test_dir, train_push_dir, \
+#                      train_batch_size, test_batch_size, train_push_batch_size
 from settings import class_specific
 import torch.nn.utils.prune as prune
+from model_size import get_model_size
 
+NUM_OF_WORKERS = 0 # originally 4, have to set to zero otherwise it will hang due to multiprocessing error
+PIN_MEMORY_FLAG = False  # originally False
 
 # test set
 test_dataset =DatasetFolder(
@@ -61,8 +69,9 @@ test_dataset =DatasetFolder(
     ]))
 test_loader = torch.utils.data.DataLoader(
     test_dataset, batch_size=test_batch_size, shuffle=False,
-    num_workers=4, pin_memory=False)
+    num_workers=NUM_OF_WORKERS, pin_memory=PIN_MEMORY_FLAG)
 
+"""
 if "quantized" in model_name and "qat" not in model_name:
     ppnet = model.construct_PPNet(base_architecture="vgg11",
                                   pretrained=True, img_size=img_size,
@@ -106,16 +115,59 @@ else:
     ppnet = torch.load(load_model_dir)
     ppnet = ppnet.to(device)
     ppnet_multi = torch.nn.DataParallel(ppnet)
-    #
-    torch.quantization.quantize_dynamic(ppnet_multi, dtype=torch.qint8, inplace=True)
+    #torch.quantization.quantize_dynamic(ppnet_multi, dtype=torch.qint8, inplace=True)
     #torch.quantization.fuse_modules(ppnet_multi.module.features.features, [['0', '1'],['3', '4']], inplace=True)
-print_size_of_model(ppnet_multi)
-times = []
-with torch.no_grad():
-    for i in range(7):
-        auc, accu = tnt.test(model=ppnet_multi, dataloader=test_loader,
-                            class_specific=class_specific)
-        times.append(accu)
+# print_size_of_model(ppnet_multi)
+""" 
 
+ppnet = torch.load(load_model_dir, map_location=device)
+ppnet = ppnet.to(device)
+# ppnet = torch.nn.DataParallel(ppnet)
+# ppnet_multi = torch.nn.DataParallel(ppnet)
+
+#####################################################################
+# convert type to float32
+# this is necessary as pytorch only supports float 32 for propagation!!! 
+import optimisation_helper
+from optimisation_helper import uint8_to_float32, bit7_to_float32, bit6_to_float32, bit5_to_float32, bit4_to_float32, bit3_to_float32
+
+
+# do not need for fixed 12 and 24
+# for name, param in ppnet.named_parameters():
+#     if 'weight' in name or 'bias' in name:
+#         # for 8,7,6,5,4,3 quantization
+#         device = torch.device("cpu")
+#         param.data = param.data.to(device)
+#         param.data = param.data.to(torch.float32)
+        
+#         # change to appropriate quantization inverse function
+#         param.data = param.data.apply_(optimisation_helper.uint8_to_float32)
+#         device = torch.device("cuda:0")
+#         param.data = param.data.to(device)
+
+#         # for float16, binary and ternary quantization
+#         # param.data = param.data.to(torch.float32)
+
+#####################################################################
+
+# carry out testing
+times = []
+num_tests = 100
+
+with torch.no_grad():
+    for i in range(num_tests):
+        # Set output_accuracy to False in train_and_test.py
+        # When testing a reduce precision model, set REDUCE_PRECISION_FLAG (and REDUCE_PRECISION_CNN_FLAG) to True in model.py
+        auc, time = tnt.test(model=ppnet, dataloader=test_loader,
+                            class_specific=class_specific)
+        times.append(time)
+        print("auc: ", auc)
+        print("Test number: ", i, "Time elapsed: ", time)
+
+# output results
 print(times)
-print(summary(ppnet_multi, input_size=(1, 3, 224, 224)))
+print("Average time: ", sum(times)/len(times))
+print("Median time: ", sorted(times)[len(times)//2])
+print("Standard deviation in time: ", np.std(times))
+print("auc: ", auc)
+print(summary(ppnet, input_size=(1, 3, 224, 224)))

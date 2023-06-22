@@ -8,6 +8,7 @@ from vgg_features import vgg11_features, vgg11_bn_features, vgg13_features, vgg1
                          vgg19_features, vgg19_bn_features
 from torch.quantization import QuantStub, DeQuantStub
 from receptive_field import compute_proto_layer_rf_info_v2
+import optimisation_helper
 
 base_architecture_to_features = {'resnet18': resnet18_features,
                                  'resnet34': resnet34_features,
@@ -26,6 +27,23 @@ base_architecture_to_features = {'resnet18': resnet18_features,
                                  'vgg16_bn': vgg16_bn_features,
                                  'vgg19': vgg19_features,
                                  'vgg19_bn': vgg19_bn_features}
+
+REDUCE_PRECISION_FLAG = False
+QUANT_DEQUANT = optimisation_helper.quant_dequant_float16
+def qu_dequ(tensor):
+    tensor = tensor.to(torch.device("cpu"))  # apply_ only works on cpu, not gpu
+    tensor = tensor.apply_(QUANT_DEQUANT)
+    tensor = tensor.to(torch.device("cuda:0"))
+    return tensor
+
+REDUCE_PRECISION_CNN_FLAG = False
+def qu_dequ_hook(module, input, output):
+    output = output.to(torch.device("cpu"))  # apply_ only works on cpu, not gpu
+    output = output.apply_(QUANT_DEQUANT)
+    output = output.to(torch.device("cuda:0"))
+    print("output shape: ", output.shape)
+    return output
+    
 
 class PPNet(nn.Module):
 
@@ -102,6 +120,7 @@ class PPNet(nn.Module):
                     add_on_layers.append(nn.Sigmoid())
                 current_in_channels = current_in_channels // 2
             self.add_on_layers = nn.Sequential(*add_on_layers)
+        # This is what is used in main.py
         elif add_on_layers_type == "none":
             self.add_on_layers = nn.Sequential()
         else:
@@ -134,9 +153,24 @@ class PPNet(nn.Module):
         '''
         the feature input to prototype layer
         '''
-        x = self.features(x)
+        # x = self.features(x)
+        if (REDUCE_PRECISION_FLAG and REDUCE_PRECISION_CNN_FLAG):
+            # note this operation takes a lot of time and memory due to how large the CNN is
+            hooks = []
+            for module in self.features.modules():
+                if isinstance(module, nn.Conv2d):
+                    hook = module.register_forward_hook(qu_dequ_hook)
+                    hooks.append(hook)
+            reduced_precision_output = self.features(x)
+            for hook in hooks:
+                hook.remove()
+            return reduced_precision_output
+
+        else:
+            return self.features(x)
+    
         #x = self.add_on_layers(x)
-        return x
+        # return x
 
     @staticmethod
     def _weighted_l2_convolution(input, filter, weights):
@@ -203,17 +237,19 @@ class PPNet(nn.Module):
             return self.prototype_activation_function(distances)
 
     def forward(self, x):
+        ### End of Convolution layers f and before prototype layer g
         # x is of dimension (batch, 4, spatial, spatial)
-        x = self.quant(x)
+        # x = self.quant(x)
+        if REDUCE_PRECISION_FLAG:
+            x = qu_dequ(x)
         x = x[:, 0:3, :, :]  #(no view; create slice. When no fa is available this will return x)
         distances = self.prototype_distances(x)
-        
 
         '''
         we cannot refactor the lines below for similarity scores
         because we need to return min_distances
         '''
-        
+        ### Prototype layer g 
         _distances = distances.view(distances.shape[0], distances.shape[1], -1)
         top_k_neg_distances, _ = torch.topk(-_distances, self.topk_k)
         closest_k_distances = - top_k_neg_distances
@@ -223,14 +259,21 @@ class PPNet(nn.Module):
         _activations = prototype_activations.view(prototype_activations.shape[0], prototype_activations.shape[1], -1)
         top_k_activations, _ = torch.topk(_activations, self.topk_k)
         prototype_activations = F.avg_pool1d(top_k_activations, kernel_size=top_k_activations.shape[2]).view(-1, self.num_prototypes) 
-        prototype_activations = self.quant(prototype_activations)
+        # prototype_activations = self.quant(prototype_activations)
+
+        ### fully connected h1 layer
+        if REDUCE_PRECISION_FLAG:
+            prototype_activations = qu_dequ(prototype_activations)
         logits = self.last_layer(prototype_activations)
         logits = self.dequant(logits)
 
         if not self.class_specific:
             logits[:,0] = 0
 
-        activation = self.distance_2_similarity(distances)
+        ### fully connected h2 layer
+        activation = self.distance_2_similarity(distances) # distances were previously quantised already
+        if REDUCE_PRECISION_FLAG:
+            activation = qu_dequ(activation)
         upsampled_activation = torch.nn.Upsample(size=(x.shape[2], x.shape[3]), mode='bilinear', align_corners=False)(activation)
         #!! !! logits = self.dequant(logits)
         return logits, min_distances, upsampled_activation
@@ -316,6 +359,7 @@ class PPNet(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+        # in main.py last_layer_connection_weight is -1
         if self.last_layer_connection_weight:
             self.set_last_layer_incorrect_connection(incorrect_strength=self.last_layer_connection_weight)
         else:

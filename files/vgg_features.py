@@ -203,6 +203,7 @@ def vgg16_features(pretrained=False, **kwargs):
                 keys_to_remove.add(key)
         for key in keys_to_remove:
             del my_dict[key]
+        # load model previously saved as state_dict
         model.load_state_dict(my_dict, strict=False)
     return model
 

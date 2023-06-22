@@ -72,10 +72,10 @@ img = ImageOps.grayscale(img)
 narr = asarray(img)
 #narr = np.load("/usr/xtmp/mammo/Lo1136i_with_fa/validation/Carrot/1024_arr.npy")
 narr = np.stack([narr, narr, narr])
-t = torch.from_numpy(narr).float() / 255
-t = t.unsqueeze(0)
+channel_non_zero = torch.from_numpy(narr).float() / 255
+channel_non_zero = channel_non_zero.unsqueeze(0)
 
-input = t.to(device)
+input = channel_non_zero.to(device)
 
 grad_req = torch.no_grad()
 with grad_req:
